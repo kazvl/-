@@ -1,0 +1,588 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Пингвинчик бегунчик — Антарктика</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Comic Sans MS', 'Chalkboard SE', sans-serif;
+      background: linear-gradient(180deg, #87CEEB 0%, #E0F4FF 50%, #FFF 100%);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+    h1 { color: #2C5AA0; text-shadow: 2px 2px 0 #fff; font-size: 2rem; margin-bottom: 0.5rem; }
+    #game-container {
+      position: relative;
+      background: linear-gradient(180deg, #B8E0F5 0%, #E8F4FC 70%, #FFF 100%);
+      border-radius: 16px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.15);
+      padding: 12px;
+      border: 4px solid #5B9BD5;
+    }
+    #canvas-wrapper { position: relative; border-radius: 12px; overflow: hidden; background: #D4EDFC; }
+    #gameCanvas { display: block; border-radius: 8px; cursor: pointer; }
+    .screen-overlay {
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: rgba(255,255,255,0.92);
+      border-radius: 8px;
+      padding: 24px;
+      text-align: center;
+      z-index: 10;
+    }
+    .screen-overlay.hidden { display: none; }
+    .screen-overlay h2 { color: #2C5AA0; font-size: 1.8rem; margin-bottom: 12px; }
+    .screen-overlay p { color: #555; margin-bottom: 20px; font-size: 1.1rem; }
+    .btn {
+      font-family: inherit;
+      font-size: 1.2rem;
+      padding: 12px 28px;
+      border: none;
+      border-radius: 999px;
+      background: linear-gradient(180deg, #4CAF50 0%, #388E3C 100%);
+      color: white;
+      cursor: pointer;
+      box-shadow: 0 4px 0 #2E7D32, 0 6px 12px rgba(0,0,0,0.2);
+    }
+    .btn:hover { transform: translateY(-2px); }
+    .btn:active { transform: translateY(2px); }
+    #hud {
+      position: absolute;
+      top: 12px; left: 12px; right: 12px;
+      display: flex;
+      justify-content: space-between;
+      padding: 8px 12px;
+      pointer-events: none;
+      z-index: 5;
+    }
+    #hud span {
+      background: rgba(255,255,255,0.9);
+      padding: 6px 14px;
+      border-radius: 20px;
+      font-weight: bold;
+      color: #2C5AA0;
+      font-size: 1rem;
+    }
+  </style>
+</head>
+<body>
+  <h1>🐧 Пингвинчик бегунчик</h1>
+  <div id="game-container">
+    <div id="canvas-wrapper">
+      <canvas id="gameCanvas" width="800" height="400" tabindex="0"></canvas>
+      <div id="hud">
+        <span>🐟 Очки: <span id="scoreEl">0</span></span>
+        <span>⭐ Рекорд: <span id="highScoreEl">0</span></span>
+      </div>
+      <div id="startScreen" class="screen-overlay">
+        <h2>🐧 Добро пожаловать в Антарктику!</h2>
+        <p><strong>Пробел</strong> — прыжок (перепрыгивай низкие препятствия).<br>
+           <strong>Стрелка вниз</strong> — пригнуться (пролезай под высокими).<br>
+           Собирай рыбок — получай очки!</p>
+        <button class="btn" id="startBtn">Играть</button>
+      </div>
+      <div id="gameOverScreen" class="screen-overlay hidden">
+        <h2>Игра окончена</h2>
+        <p>Очки: <strong id="finalScore">0</strong></p>
+        <p>Рекорд: <strong id="finalRecord">0</strong></p>
+        <button class="btn" id="restartBtn">Играть снова</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+(function () {
+  'use strict';
+
+  const CANVAS_W = 800, CANVAS_H = 400, GROUND_Y = 320;
+  const GRAVITY = 0.8;
+  const JUMP_FORCE = -18;
+  const BASE_SPEED = 6;
+  const SPEED_INCREMENT = 0.8;
+  const FISH_BONUS_EVERY = 10;
+  const PENGUIN_NORMAL_H = 50;
+  const PENGUIN_SLIDE_H = 26;
+  const SLIDE_DURATION = 35;
+  const FISH_W = 28, FISH_H = 18;
+
+  const OBSTACLE_LOW = [
+    { name: 'ice', w: 50, h: 35, color: '#B3E5FC' },
+    { name: 'crack', w: 45, h: 25, color: '#37474F' },
+    { name: 'snow', w: 55, h: 30, color: '#ECEFF1' }
+  ];
+  const OBSTACLE_HIGH = [
+    { name: 'iceBlock', w: 55, obY: 80, obH: 180, color: '#B3E5FC' },
+    { name: 'snowArch', w: 70, obY: 100, obH: 160, color: '#ECEFF1' },
+    { name: 'branch', w: 50, obY: 120, obH: 140, color: '#6D4C41' }
+  ];
+
+  let canvas, ctx;
+  let gameState = 'start';
+  let score = 0;
+  let highScore = parseInt(localStorage.getItem('penguinHighScore') || '0', 10);
+  let gameSpeed = BASE_SPEED;
+
+  let penguin = {
+    x: 120,
+    y: GROUND_Y - PENGUIN_NORMAL_H,
+    vy: 0,
+    w: 44,
+    h: PENGUIN_NORMAL_H,
+    jumpFrame: 0,
+    slideFrame: 0
+  };
+
+  let obstacles = [];
+  let fishList = [];
+  let groundOffset = 0;
+  let spawnTimer = 0;
+  let fishSpawnTimer = 0;
+  let animationId = null;
+  let jumpRequested = false;
+  let slideRequested = false;
+
+  const scoreEl = document.getElementById('scoreEl');
+  const highScoreEl = document.getElementById('highScoreEl');
+  const startScreen = document.getElementById('startScreen');
+  const gameOverScreen = document.getElementById('gameOverScreen');
+  const finalScoreEl = document.getElementById('finalScore');
+  const finalRecordEl = document.getElementById('finalRecord');
+
+  let audioCtx = null;
+  function playFishSound() {
+    try {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = audioCtx.createOscillator();
+      const g = audioCtx.createGain();
+      osc.connect(g); g.connect(audioCtx.destination);
+      osc.frequency.setValueAtTime(523, audioCtx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(800, audioCtx.currentTime + 0.08);
+      g.gain.setValueAtTime(0.15, audioCtx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.15);
+      osc.start(audioCtx.currentTime);
+      osc.stop(audioCtx.currentTime + 0.15);
+    } catch (_) {}
+  }
+  function playJumpSound() {
+    try {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = audioCtx.createOscillator();
+      const g = audioCtx.createGain();
+      osc.connect(g); g.connect(audioCtx.destination);
+      osc.frequency.setValueAtTime(400, audioCtx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(600, audioCtx.currentTime + 0.06);
+      g.gain.setValueAtTime(0.12, audioCtx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
+      osc.start(audioCtx.currentTime);
+      osc.stop(audioCtx.currentTime + 0.1);
+    } catch (_) {}
+  }
+  function playCollisionSound() {
+    try {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = audioCtx.createOscillator();
+      const g = audioCtx.createGain();
+      osc.type = 'sawtooth';
+      osc.connect(g); g.connect(audioCtx.destination);
+      osc.frequency.setValueAtTime(80, audioCtx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(40, audioCtx.currentTime + 0.2);
+      g.gain.setValueAtTime(0.2, audioCtx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.25);
+      osc.start(audioCtx.currentTime);
+      osc.stop(audioCtx.currentTime + 0.25);
+    } catch (_) {}
+  }
+
+  function getPenguinHitbox() {
+    const margin = 8;
+    const isSliding = penguin.slideFrame > 0;
+    const h = isSliding ? PENGUIN_SLIDE_H : PENGUIN_NORMAL_H;
+    const topY = penguin.y;
+    return { x: penguin.x + margin, w: penguin.w - margin * 2, y: topY, h: h - margin };
+  }
+
+  function drawGround() {
+    const tileW = 80;
+    const start = Math.floor(groundOffset / tileW) * tileW;
+    for (let x = start - tileW; x < CANVAS_W + tileW * 2; x += tileW) {
+      ctx.fillStyle = '#E3F2FD';
+      ctx.fillRect(x - (groundOffset % tileW), GROUND_Y, tileW + 2, CANVAS_H - GROUND_Y);
+      ctx.strokeStyle = '#BBDEFB';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(x - (groundOffset % tileW), GROUND_Y, tileW + 2, CANVAS_H - GROUND_Y);
+    }
+    ctx.fillStyle = '#FFF';
+    ctx.fillRect(0, GROUND_Y + 2, CANVAS_W, CANVAS_H);
+  }
+
+  function drawPenguin() {
+    const { x, w, vy, jumpFrame, slideFrame } = penguin;
+    const isAir = (vy !== 0 || jumpFrame > 0) && slideFrame === 0;
+    const isSliding = slideFrame > 0;
+    const h = isSliding ? PENGUIN_SLIDE_H : PENGUIN_NORMAL_H;
+    const y = isSliding ? GROUND_Y - PENGUIN_SLIDE_H : penguin.y;
+    const bounce = isAir ? Math.sin(jumpFrame * 0.25) * 4 : 0;
+    const bodyY = y + bounce;
+
+    ctx.save();
+    ctx.translate(x + w / 2, bodyY + h / 2);
+    if (isAir) ctx.rotate(-0.15);
+    if (isSliding) ctx.rotate(0.35);
+    ctx.translate(-(x + w / 2), -(bodyY + h / 2));
+
+    if (isSliding) {
+      ctx.fillStyle = '#263238';
+      ctx.beginPath();
+      ctx.ellipse(x + w / 2, bodyY + h * 0.6, w * 0.48, h * 0.45, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#37474F';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.fillStyle = '#FFF';
+      ctx.beginPath();
+      ctx.ellipse(x + w / 2, bodyY + h * 0.62, w * 0.3, h * 0.3, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#263238';
+      ctx.beginPath();
+      ctx.arc(x + w * 0.72, bodyY + h * 0.35, w * 0.2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#FF9800';
+      ctx.beginPath();
+      ctx.moveTo(x + w * 0.88, bodyY + h * 0.38);
+      ctx.lineTo(x + w * 1.02, bodyY + h * 0.42);
+      ctx.lineTo(x + w * 0.9, bodyY + h * 0.45);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = '#37474F';
+      ctx.fillRect(x + w * 0.08, bodyY + h * 0.7, w * 0.35, 6);
+      ctx.fillRect(x + w * 0.58, bodyY + h * 0.7, w * 0.35, 6);
+    } else {
+      ctx.fillStyle = '#263238';
+      ctx.beginPath();
+      ctx.ellipse(x + w / 2, bodyY + h * 0.55, w * 0.42, h * 0.5, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#37474F';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.fillStyle = '#FFF';
+      ctx.beginPath();
+      ctx.ellipse(x + w / 2, bodyY + h * 0.58, w * 0.28, h * 0.38, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#263238';
+      ctx.beginPath();
+      ctx.arc(x + w / 2, bodyY + h * 0.22, w * 0.32, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      const eyeY = bodyY + h * 0.18;
+      ctx.fillStyle = '#FFF';
+      ctx.beginPath();
+      ctx.ellipse(x + w * 0.38, eyeY, 5, 7, 0, 0, Math.PI * 2);
+      ctx.ellipse(x + w * 0.62, eyeY, 5, 7, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#212121';
+      ctx.beginPath();
+      ctx.arc(x + w * 0.38, eyeY, 2, 0, Math.PI * 2);
+      ctx.arc(x + w * 0.62, eyeY, 2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#FF9800';
+      ctx.beginPath();
+      ctx.moveTo(x + w * 0.45, bodyY + h * 0.28);
+      ctx.lineTo(x + w * 0.72, bodyY + h * 0.3);
+      ctx.lineTo(x + w * 0.5, bodyY + h * 0.35);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = '#F57C00';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      const flipperY = bodyY + h * 0.75;
+      ctx.fillStyle = '#37474F';
+      const flap = Math.sin((groundOffset + jumpFrame) * 0.2) * 6;
+      ctx.fillRect(x + w * 0.15, flipperY + flap, w * 0.22, 8);
+      ctx.fillRect(x + w * 0.63, flipperY - flap, w * 0.22, 8);
+    }
+    ctx.restore();
+  }
+
+  function drawObstacle(ob) {
+    const drawX = ob.x - groundOffset;
+    if (ob.kind === 'low') {
+      const t = OBSTACLE_LOW[ob.type];
+      ctx.fillStyle = t.color;
+      ctx.fillRect(drawX, GROUND_Y + (PENGUIN_NORMAL_H - ob.h), ob.w, ob.h);
+      ctx.strokeStyle = 'rgba(0,0,0,0.2)';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(drawX, GROUND_Y + (PENGUIN_NORMAL_H - ob.h), ob.w, ob.h);
+      if (t.name === 'crack') {
+        ctx.fillStyle = '#263238';
+        ctx.fillRect(drawX + 8, GROUND_Y + 35, 8, 15);
+        ctx.fillRect(drawX + 28, GROUND_Y + 30, 8, 20);
+      }
+    } else {
+      const t = OBSTACLE_HIGH[ob.type];
+      ctx.fillStyle = t.color;
+      ctx.fillRect(drawX, ob.obY, ob.w, ob.obH);
+      ctx.strokeStyle = 'rgba(0,0,0,0.15)';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(drawX, ob.obY, ob.w, ob.obH);
+    }
+  }
+
+  function drawFish(f) {
+    const drawX = f.x - groundOffset;
+    const bob = Math.sin((groundOffset + (f.id || 0)) * 0.15) * 4;
+    ctx.fillStyle = '#FF7043';
+    ctx.beginPath();
+    ctx.ellipse(drawX + FISH_W / 2, f.y + FISH_H / 2 + bob, FISH_W / 2, FISH_H / 2, 0.1, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#FFAB91';
+    ctx.beginPath();
+    ctx.ellipse(drawX + FISH_W * 0.35, f.y + FISH_H / 2 + bob, FISH_W * 0.25, FISH_H * 0.4, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  function hitTestObstacle(ob) {
+    const box = getPenguinHitbox();
+    const drawX = ob.x - groundOffset;
+    const obLeft = drawX;
+    const obRight = drawX + ob.w;
+    const isSliding = penguin.slideFrame > 0;
+
+    if (ob.kind === 'low') {
+      const obTop = GROUND_Y + (PENGUIN_NORMAL_H - ob.h);
+      const obBottom = GROUND_Y + PENGUIN_NORMAL_H;
+      if (box.x + box.w < obLeft || box.x > obRight) return false;
+      if (box.y + box.h <= obTop + 8) return false;
+      return box.y + box.h > obTop && box.y < obBottom;
+    }
+    if (ob.kind === 'high') {
+      const obTop = ob.obY;
+      const obBottom = ob.obY + ob.obH;
+      if (box.x + box.w < obLeft || box.x > obRight) return false;
+      if (isSliding && box.y >= obBottom - 10) return false;
+      return box.y < obBottom && box.y + box.h > obTop;
+    }
+    return false;
+  }
+
+  function hitTestFish(f) {
+    const drawX = f.x - groundOffset;
+    const box = getPenguinHitbox();
+    return box.x < drawX + FISH_W && box.x + box.w > drawX &&
+           box.y < f.y + FISH_H && box.y + box.h > f.y;
+  }
+
+  function spawnObstacle() {
+    const last = obstacles[obstacles.length - 1];
+    const minGap = 260 + Math.random() * 100;
+    const startX = last ? last.x + last.w + minGap : CANVAS_W + 100;
+    if (Math.random() < 0.5) {
+      const t = OBSTACLE_LOW[Math.floor(Math.random() * OBSTACLE_LOW.length)];
+      obstacles.push({ kind: 'low', x: startX, type: OBSTACLE_LOW.indexOf(t), w: t.w, h: t.h });
+    } else {
+      const t = OBSTACLE_HIGH[Math.floor(Math.random() * OBSTACLE_HIGH.length)];
+      obstacles.push({ kind: 'high', x: startX, type: OBSTACLE_HIGH.indexOf(t), w: t.w, obY: t.obY, obH: t.obH });
+    }
+  }
+
+  function spawnFish() {
+    const lastFish = fishList[fishList.length - 1];
+    const lastObstacle = obstacles[obstacles.length - 1];
+    const startX = Math.max(
+      CANVAS_W + 80,
+      lastFish ? lastFish.x + 100 + Math.random() * 80 : 0,
+      lastObstacle ? lastObstacle.x + lastObstacle.w + 60 : 0
+    );
+    const inAir = Math.random() > 0.5;
+    const y = inAir ? GROUND_Y - 80 - Math.random() * 100 : GROUND_Y - FISH_H - 10;
+    fishList.push({ x: startX, y, id: Math.random() * 1000 });
+  }
+
+  function isOnGround() {
+    return penguin.y >= GROUND_Y - PENGUIN_NORMAL_H - 4 && penguin.slideFrame === 0;
+  }
+
+  function jump() {
+    if (gameState !== 'playing') return;
+    if (penguin.slideFrame > 0) return;
+    if (isOnGround()) {
+      penguin.vy = JUMP_FORCE;
+      penguin.jumpFrame = 1;
+      playJumpSound();
+    } else {
+      jumpRequested = true;
+    }
+  }
+
+  function slide() {
+    if (gameState !== 'playing') return;
+    if (penguin.slideFrame > 0) return;
+    if (penguin.vy !== 0 || penguin.jumpFrame > 0) return;
+    if (penguin.y >= GROUND_Y - PENGUIN_NORMAL_H - 4) {
+      penguin.slideFrame = SLIDE_DURATION;
+    } else {
+      slideRequested = true;
+    }
+  }
+
+  function update() {
+    if (gameState !== 'playing') return;
+
+    groundOffset += gameSpeed;
+    spawnTimer += gameSpeed;
+    fishSpawnTimer += gameSpeed;
+
+    if (spawnTimer > 120) { spawnTimer = 0; spawnObstacle(); }
+    if (fishSpawnTimer > 90) { fishSpawnTimer = 0; spawnFish(); }
+
+    if (jumpRequested && isOnGround()) {
+      penguin.vy = JUMP_FORCE;
+      penguin.jumpFrame = 1;
+      jumpRequested = false;
+      playJumpSound();
+    }
+    if (slideRequested && penguin.slideFrame === 0 && penguin.vy === 0 && penguin.jumpFrame === 0 && penguin.y >= GROUND_Y - PENGUIN_NORMAL_H - 4) {
+      penguin.slideFrame = SLIDE_DURATION;
+      slideRequested = false;
+    }
+
+    if (penguin.slideFrame > 0) {
+      penguin.slideFrame--;
+      penguin.y = GROUND_Y - PENGUIN_SLIDE_H;
+      penguin.vy = 0;
+    } else {
+      penguin.vy += GRAVITY;
+      penguin.y += penguin.vy;
+      if (penguin.y >= GROUND_Y - PENGUIN_NORMAL_H) {
+        penguin.y = GROUND_Y - PENGUIN_NORMAL_H;
+        penguin.vy = 0;
+        if (penguin.jumpFrame > 0) penguin.jumpFrame = 0;
+      } else {
+        penguin.jumpFrame++;
+      }
+    }
+
+    for (let i = obstacles.length - 1; i >= 0; i--) {
+      const ob = obstacles[i];
+      if (ob.x - groundOffset < -ob.w - 50) {
+        obstacles.splice(i, 1);
+        continue;
+      }
+      if (hitTestObstacle(ob)) {
+        playCollisionSound();
+        gameState = 'over';
+        showGameOver();
+        return;
+      }
+    }
+
+    for (let i = fishList.length - 1; i >= 0; i--) {
+      const f = fishList[i];
+      if (f.x - groundOffset < -FISH_W - 20) {
+        fishList.splice(i, 1);
+        continue;
+      }
+      if (hitTestFish(f)) {
+        fishList.splice(i, 1);
+        score++;
+        playFishSound();
+        if (score % FISH_BONUS_EVERY === 0) {
+          gameSpeed = BASE_SPEED + Math.floor(score / FISH_BONUS_EVERY) * SPEED_INCREMENT;
+        }
+      }
+    }
+
+    scoreEl.textContent = score;
+    if (score > highScore) {
+      highScore = score;
+      highScoreEl.textContent = highScore;
+      localStorage.setItem('penguinHighScore', String(highScore));
+    }
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
+    drawGround();
+    obstacles.forEach(drawObstacle);
+    fishList.forEach(drawFish);
+    drawPenguin();
+  }
+
+  function gameLoop() {
+    update();
+    draw();
+    animationId = requestAnimationFrame(gameLoop);
+  }
+
+  function startGame() {
+    gameState = 'playing';
+    score = 0;
+    gameSpeed = BASE_SPEED;
+    penguin.y = GROUND_Y - PENGUIN_NORMAL_H;
+    penguin.vy = 0;
+    penguin.jumpFrame = 0;
+    penguin.slideFrame = 0;
+    jumpRequested = false;
+    slideRequested = false;
+    obstacles = [];
+    fishList = [];
+    groundOffset = 0;
+    spawnTimer = 0;
+    fishSpawnTimer = 0;
+    scoreEl.textContent = '0';
+    highScoreEl.textContent = highScore;
+    startScreen.classList.add('hidden');
+    gameOverScreen.classList.add('hidden');
+    canvas.focus();
+    gameLoop();
+  }
+
+  function showGameOver() {
+    if (animationId != null) cancelAnimationFrame(animationId);
+    finalScoreEl.textContent = score;
+    finalRecordEl.textContent = highScore;
+    gameOverScreen.classList.remove('hidden');
+  }
+
+  function init() {
+    canvas = document.getElementById('gameCanvas');
+    ctx = canvas.getContext('2d');
+    highScoreEl.textContent = highScore;
+
+    document.getElementById('startBtn').addEventListener('click', startGame);
+    document.getElementById('restartBtn').addEventListener('click', startGame);
+
+    function onKey(e) {
+      if (e.code === 'Space' || e.code === 'ArrowUp') {
+        e.preventDefault();
+        if (gameState === 'start') startGame();
+        else jump();
+      }
+      if (e.code === 'ArrowDown' || e.code === 'KeyS') {
+        e.preventDefault();
+        if (gameState === 'playing') slide();
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    document.addEventListener('keydown', onKey, true);
+    canvas.addEventListener('keydown', onKey);
+    canvas.addEventListener('click', function () {
+      if (gameState === 'start') startGame();
+      else jump();
+    });
+  }
+
+  init();
+})();
+  </script>
+</body>
+</html>
